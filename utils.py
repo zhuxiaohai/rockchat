@@ -1,4 +1,6 @@
 import re
+import jieba
+
 
 def find_non_chinese_substrings(s):
     # 正则表达式解释：
@@ -35,3 +37,68 @@ def find_error_with_reason(a):
     matches = matches1 + matches2
 
     return [name.replace(" ", "").replace("原因", "") for name in matches]
+
+
+def find_model(x, all_model_list):
+    x = x.replace("\n", "")
+    x = find_non_chinese_substrings(x)
+    result = [clean_string(s) for s in x]
+    return [model for model in all_model_list if model in result]
+
+
+def find_cat(x, all_cat_list):
+    return [name for name in all_cat_list if name in x]
+
+
+def remove_model_name(x, all_model_list):
+    x = x.replace("\n", "")
+    candidates = find_non_chinese_substrings(x)
+    for name in candidates:
+        if clean_string(name) in all_model_list:
+            x = x.replace(name, "")
+    return x
+
+
+class WordCut:
+    def __init__(self):
+        with open('/data/dataset/kefu/hit_stopwords.txt', encoding='utf-8') as f:  # 可根据需要打开停用词库，然后加上不想显示的词语
+            con = f.readlines()
+            stop_words = set()
+            for i in con:
+                i = i.replace("\n", "")  # 去掉读取每一行数据的\n
+                stop_words.add(i)
+        self.stop_words = stop_words
+
+    def cut(self, text):
+        # jieba.load_userdict('自定义词典.txt')  # 这里你可以添加jieba库识别不了的网络新词，避免将一些新词拆开
+        # jieba.initialize()  # 初始化jieba
+        # 文本预处理 ：去除一些无用的字符只提取出中文出来
+        # new_data = re.findall('[\u4e00-\u9fa5]+', mytext, re.S)
+        # new_data = " ".join(new_data)
+        # 匹配中英文标点符号，以及全角和半角符号
+        pattern = r'[\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65\u2018\u2019\u201c\u201d\u2026\u00a0\u2022\u2013\u2014\u2010\u2027\uFE10-\uFE1F\u3001-\u301E]|[\.,!¡?¿\-—_(){}[\]\'\";:/]'
+        # 使用 re.sub 替换掉符合模式的字符为空字符
+        new_data = re.sub(pattern, '', text)
+        # 文本分词
+        seg_list_exact = jieba.lcut(new_data)
+        result_list = []
+        # 去除停用词并且去除单字
+        for word in seg_list_exact:
+            if word not in self.stop_words and len(word) > 1:
+                result_list.append(word)
+        return result_list
+
+
+def ranking_metric(x):
+    if (x.find("error") >= 0) and (x.find("model") >= 0):
+        return 1
+    elif (x.find("error") >= 0) and (x.find("cat") >= 0):
+        return 2
+    elif (x.find("error") >= 0):
+        return 3
+    elif (x.find("model") >= 0):
+        return 4
+    elif (x.find("cat") >= 0):
+        return 5
+    else:
+        return 6

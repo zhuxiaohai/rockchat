@@ -1,10 +1,46 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 import heapq
-import re
+import requests
+from time import time
+import numpy as np
 import pandas as pd
-from utils import find_error_with_reason
 from fastbm25 import fastbm25
+from sentence_transformers import SentenceTransformer
+
+
+def send_embedding_requests(string_list, num_requests=3, url="http://0.0.0.0:8501/embeddings/", verbose=False):
+    headers = {
+        "accept": "application/json",
+        "Content-Type": "application/json"
+    }
+    json_data = {
+        "sentences": string_list
+    }
+
+    if verbose:
+        start_time = time()
+        print("Sending requests...")
+
+    responses = []
+    for i in range(num_requests):
+        response = requests.post(url, headers=headers, json=json_data)
+        if response.status_code == 200:
+            # 直接处理 JSON 响应
+            responses.append(response.json())
+        else:
+            if verbose:
+                print(f"Request {i + 1} failed with status code {response.status_code}")
+
+    if verbose:
+        end_time = time()
+        duration = end_time - start_time
+        print(f"All requests have been sent.\nTotal time taken: {duration:.2f} seconds")
+
+    if len(responses) > 0:
+        return responses[0]["embeddings"]
+    else:
+        return None
 
 
 class FastBM25(fastbm25):
@@ -26,69 +62,77 @@ class FastBM25(fastbm25):
                 else:
                     score_overall[key] += value
         k_keys_sorted = heapq.nlargest(k, score_overall, key=score_overall.__getitem__)
-        return [{"doc": self.corpus[item], "index": item, "score": score_overall.get(item, None)}
+        return [{"index": index, "score": score_overall.get(index, None)}
+                for index in k_keys_sorted]
+
+
+class VectorSim:
+    def __init__(self, corpus, model_path, online=False):
+        self.corpus = corpus
+        self.online = online
+        self.model_path = model_path
+        if not online:
+            self.model = SentenceTransformer(model_path)
+        self.embeddings = self.get_embedding(corpus)
+
+    def get_embedding(self, document_list):
+        if self.online:
+            return send_embedding_requests(document_list, url=self.model_path)
+        else:
+            return self.model.encode(document_list, normalize_embeddings=True).tolist()
+
+    def top_k_sentence(self, document, k=1, filter_indices=None):
+        def cosine_similarity(a, b):
+            return np.dot(a, b) / (np.linalg.norm(a) * np.linalg.norm(b))
+        embedding = self.get_embedding([document])[0]
+        if filter_indices is None:
+            filter_indices = range(len(self.embeddings))
+        # else:
+        #     filter_indices = sorted(list(filter_indices))
+        score_overall = []
+        for index in filter_indices:
+            score = cosine_similarity(embedding, self.embeddings[index])
+            score_overall.append({"index": index, "score": score})
+        k_keys_sorted = sorted(score_overall, key=lambda x: (-x["score"], x["index"]))[:k]
+        return [{"index": item["index"], "score": item["score"]}
                 for item in k_keys_sorted]
-
-class WordCut:
-    def __init__(self, all_model_list=None):
-        with open('/data/dataset/kefu/hit_stopwords.txt', encoding='utf-8') as f:  # 可根据需要打开停用词库，然后加上不想显示的词语
-            con = f.readlines()
-            stop_words = set()
-            for i in con:
-                i = i.replace("\n", "")  # 去掉读取每一行数据的\n
-                stop_words.add(i)
-        self.stop_words = stop_words
-        self.all_model_list = all_model_list
-
-    def cut(self, mytext):
-        # jieba.load_userdict('自定义词典.txt')  # 这里你可以添加jieba库识别不了的网络新词，避免将一些新词拆开
-        # jieba.initialize()  # 初始化jieba
-        # 文本预处理 ：去除一些无用的字符只提取出中文出来
-        # new_data = re.findall('[\u4e00-\u9fa5]+', mytext, re.S)
-        # new_data = " ".join(new_data)
-        # 匹配中英文标点符号，以及全角和半角符号
-        pattern = r'[\u3000-\u303f\uff01-\uff0f\uff1a-\uff20\uff3b-\uff40\uff5b-\uff65\u2018\u2019\u201c\u201d\u2026\u00a0\u2022\u2013\u2014\u2010\u2027\uFE10-\uFE1F\u3001-\u301E]|[\.,!¡?¿\-—_(){}[\]\'\";:/]'
-        # 使用 re.sub 替换掉符合模式的字符为空字符
-        new_data = re.sub(pattern, '', mytext)
-        new_data = transform_model_name(new_data, self.all_model_list)
-        # 文本分词
-        seg_list_exact = jieba.lcut(new_data)
-        result_list = []
-        # 去除停用词并且去除单字
-        for word in seg_list_exact:
-            if word not in self.stop_words and len(word) > 1:
-                result_list.append(word)
-        return result_list
 
 
 class PandasSearchEngine(ABC):
     def __init__(self, config):
-        super().__init__(config)
         self.config = config
         self.df = pd.read_csv(config["database_path"]).reset_index(drop=True)
         self.build_index(config["index_columns"])
         if config["score_model"]["type"] == "bm25":
             self.tokenizer = config["score_model"]["tokenizer"]
-            document_list = [self.tokenizer.cut(doc) for doc in self.df[config["embedding_col"]]]
+            document_list = [self.tokenizer.cut(doc) for doc in self.df[config["score_model"]["embedding_col"]]]
             self.score_function = config["score_model"]["class"](document_list)
+        elif config["score_model"]["type"] == "vector":
+            self.score_function = config["score_model"]["class"](
+                self.df[config["score_model"]["embedding_col"]].tolist(),
+                config["score_model"]["embedding_model_path"],
+                config["score_model"].get("online", False),
+            )
 
     def build_index(self, columns):
         self.index = {}
-        for col in columns:
+        for col, rename in columns:
             inv_dict = {}
             for i in range(self.df.shape[0]):
                 row = self.df[col].iloc[i]
+                if pd.isna(row):
+                    row = ""
                 for entity in row.split(","):
                     if entity in inv_dict:
                         inv_dict[entity].add(i)
                     else:
                         inv_dict[entity] = {i}
-            self.index[col] = inv_dict
+            self.index[rename] = inv_dict
 
     def get_filters(self, labels):
         filters = {}
         for col in labels:
-            if isinstance(labels[col]) is not dict:
+            if not isinstance(labels[col], list):
                 continue
             indices = set()
             for entity in labels[col]:
@@ -102,13 +146,6 @@ class PandasSearchEngine(ABC):
 
 
 class QASearchEngine(PandasSearchEngine):
-    def __init__(self, config):
-        super().__init__(config)
-        self.preprocess()
-
-    def preprocess(self):
-        self.df["error_list"] = self.df.question.apply(lambda x: ",".join(find_error_with_reason(x)))
-
     def search(self, body):
         query = body["query"]
         if self.config["score_model"]["type"] == "bm25":
@@ -117,60 +154,63 @@ class QASearchEngine(PandasSearchEngine):
         top_n = body["top_n"]
 
         def pattern1(main_filter):
-            if len(main_filter) == 0:
-                return
             results = []
-            intersection_indices = main_filter & filters["error_list"]
+            if len(main_filter) == 0:
+                return results
+            intersection_indices = main_filter & filters["error"]
             if len(intersection_indices) > 0:
-                result = self.score_function.top_k_sentence(query, filter_indices=intersection_indices)
+                result = self.score_function.top_k_sentence(query, k=int(top_n/2), filter_indices=intersection_indices)
                 results += result
-                difference_indices = main_filter - filters["error_list"]
-                result = self.score_function.top_k_sentence(query, filter_indices=difference_indices)
+                difference_indices = main_filter - filters["error"]
+                result = self.score_function.top_k_sentence(query, k=int(top_n/2), filter_indices=difference_indices)
                 results += result
             else:
-                result = self.score_function.top_k_sentence(query, filter_indices=main_filter)
+                result = self.score_function.top_k_sentence(query, k=int(top_n/2), filter_indices=main_filter)
                 results += result
-                result = self.score_function.top_k_sentence(query, filter_indices=filters["error_list"])
+                result = self.score_function.top_k_sentence(query, k=int(top_n/2), filter_indices=filters["error"])
                 results += result
-            difference_indices = filters["cat_list"] - main_filter
-            result = self.score_function.top_k_sentence(query, filter_indices=difference_indices)
+            difference_indices = filters["cat"] - main_filter
+            result = self.score_function.top_k_sentence(query, k=int(top_n/2), filter_indices=difference_indices)
             results += result
             return results
 
         def pattern2(main_filter):
-            if len(main_filter) == 0:
-                return
             results = []
+            if len(main_filter) == 0:
+                return results
             all_set = set(range(self.df.shape[0]))
-            result = self.score_function.top_k_sentence(query, filter_indices=main_filter)
+            result = self.score_function.top_k_sentence(query, k=int(top_n/2), filter_indices=main_filter)
             results += result
             difference_filter = all_set - main_filter
-            result = self.score_function.top_k_sentence(query, filter_indices=difference_filter)
+            result = self.score_function.top_k_sentence(query, k=int(top_n/2), filter_indices=difference_filter)
             results += result
             return results
 
         def add_info():
             for result in result_list:
-                doc_id = result["id"]
+                doc_index = result["index"]
+                doc_id = self.df[self.config["id_col"]].iloc[doc_index]
+                result["id"] = doc_id
+                result.pop("index")
                 reasons = []
                 for col in filters:
-                    if doc_id in filters[col]:
+                    if doc_index in filters[col]:
                         reasons.append(col)
                 result["info"] = "|".join(reasons)
 
         result_list = []
-        if len(filters["model_list"]) > 0:
-            result = pattern1(filters["model_list"])
+        if len(filters["model"]) > 0:
+            result = pattern1(filters["model"])
             result_list += result
         else:
-            result = pattern1(filters["cat_list"])
+            result = pattern1(filters["cat"])
             result_list += result
         if len(result_list) == 0:
-            if len(filters["error_list"]) > 0:
-                result = pattern2(filters["error_list"])
+            if len(filters["error"]) > 0:
+                result = pattern2(filters["error"])
                 result_list += result
             else:
-                result = self.score_function.top_k_sentence(query, top_n)
+                result = self.score_function.top_k_sentence(query, k=top_n)
                 result_list += result
         add_info()
 
