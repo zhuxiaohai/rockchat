@@ -10,6 +10,7 @@ def test_qa_reranker():
 
     config = {
         "rank_key": [("rank", False)],
+        "show_cols": ["question", "answer"],
         "reranking_scheme": {
             "recall_ranking_score_threshold": 0.75,
             "recall_ranking_top_n": 2,

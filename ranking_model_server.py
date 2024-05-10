@@ -21,7 +21,7 @@ port = 8501
 
 
 class BAAIWrapper:
-    def __init__(self, ranking_model: str, embedding_name: str):
+    def __init__(self, ranking_model: str):
         self.ranking_model = FlagReranker(ranking_model, use_fp16=True)
 
     def rerank(self, sentence_pairs: List[Tuple[str, str]]) -> List[float]:

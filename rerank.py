@@ -3,8 +3,6 @@ import copy
 from utils import ranking_metric
 import pandas as pd
 
-show_cols = ["question", "answer"]
-
 
 class RerankBase(ABC):
     def __init__(self, config):
@@ -20,12 +18,16 @@ class QAReranker(RerankBase):
         super().__init__(config)
         self.rank_key = config["rank_key"]
         self.reranking_scheme = config.get("reranking_scheme", None)
+        self.show_cols = config.get("show_cols", [])
         self.df = pd.read_csv(config["database_path"]).set_index("qa_id")
 
     def rerank(self, results):
         ranked_results = copy.deepcopy(results)
         ranked_results = sorted(ranked_results, key=lambda x: [x[key] if ascending else -x[key]
                                                                for key, ascending in self.rank_key])
+        for item in ranked_results:
+            for col in self.show_cols:
+                item.update({col: self.df.loc[item["id"], col]})
         if not self.reranking_scheme:
             return ranked_results
 
@@ -34,14 +36,15 @@ class QAReranker(RerankBase):
             if (
                     (item["info"].find("model") >= 0) |
                     (item["info"].find("error") >= 0) |
-                    (len(item["info"].split(",")) > 1)
+                    (len(item.get("recall", [])) > 1)
             ) & (item["score"] > self.reranking_scheme["recall_ranking_score_threshold"]):
                 item["rerank"] = ranking_metric(item["info"])
                 topping_indices.append(i)
         topping_indices = sorted(
             topping_indices,
-            key=lambda index: (ranked_results[index]["rerank"],
-                               -ranked_results[index]["score"])
+            key=lambda index: [ranked_results[index]["rerank"]] +
+                              [ranked_results[index][key] if ascending else -ranked_results[index][key]
+                               for key, ascending in self.rank_key]
         )[:self.reranking_scheme["recall_ranking_top_n"]]
         topping_indices = {index: rerank_order for rerank_order, index
                            in sorted(enumerate(topping_indices), key=lambda x: x[1])}
@@ -49,14 +52,10 @@ class QAReranker(RerankBase):
         reranked_results = []
         for index in topping_indices:
             ranked_results[index].update({"rerank": topping_indices[index]})
-            for col in show_cols:
-                ranked_results[index].update({col: self.df.loc[ranked_results[index]["id"], col]})
             reranked_results.append(ranked_results[index])
         for index, item in enumerate(ranked_results):
             if index not in topping_indices:
                 ranked_results[index].update({"rerank": -1})
-                for col in show_cols:
-                    ranked_results[index].update({col: self.df.loc[ranked_results[index]["id"], col]})
                 reranked_results.append(ranked_results[index])
 
         return reranked_results

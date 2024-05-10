@@ -14,45 +14,6 @@ key_map = {"result": "id"}
 one_channel_map = {"vector_search": "raw"}
 one_duplication_map = {"vector_search": "duplicated"}
 
-def format_info(v):
-    if v == "errorcode":
-        return "error"
-    elif v == "none":
-        return ""
-    else:
-        return v
-
-def check_results(i, phase, results, ground_truth_list):
-    for j in range(len(results)):
-        for key in results[j]:
-            if key == "info":
-                results[j][key] = "|".join(sorted([format_info(v) for v in results[j][key].split("|")]))
-            if key == "score":
-                results[j][key] = round(results[j][key], 2)
-    results = sorted(results, key=lambda x: (x["id"], x["info"]))
-
-    for j in range(len(ground_truth_list)):
-        for key in key_map:
-            ground_truth_list[j][key_map[key]] = ground_truth_list[j].pop(key)
-        for key in ground_truth_list[j]:
-            if key == "info":
-                ground_truth_list[j][key] = "|".join(
-                    sorted([format_info(v) for v in ground_truth_list[j][key].split("|")]))
-            if key == "score":
-                ground_truth_list[j][key] = round(ground_truth_list[j][key], 2)
-    ground_truth_list = sorted(ground_truth_list, key=lambda x: (x["id"], x["info"]))
-
-    try:
-        assert len(results) == len(ground_truth_list)
-    except:
-        print(f"{phase} number mismatch", i)
-    for j in range(len(ground_truth_list)):
-        try:
-            for key in ["id", "score", "info"]:
-                assert results[j][key] == ground_truth_list[j][key]
-        except:
-            print(f"{phase} item mismatch", i)
-
 
 def test_qa_pipeline():
     test = pd.read_csv("data/data_pipeline.csv")
@@ -109,6 +70,7 @@ def test_qa_pipeline():
         "class": QAReranker,
         "config": {
             "rank_key": [("rank", False)],
+            "show_cols": ["question", "answer"],
             "reranking_scheme": {
                 "recall_ranking_score_threshold": 0.75,
                 "recall_ranking_top_n": 2,
@@ -128,7 +90,6 @@ def test_qa_pipeline():
     qa_pipeline = QAPineline(pipeline_config)
 
     for i in range(test.shape[0]):
-
         query = test["raw_question"].iloc[i]
         results = qa_pipeline.run(query)
         ground_truth_list = json.loads(test["reranking"].iloc[i])
@@ -142,7 +103,11 @@ def test_qa_pipeline():
         try:
             assert results == ground_truth_list
         except:
-            print("item ranking mismatch", i)
+            try:
+                assert results[:5] == ground_truth_list[:5]
+                print("top5 match but not all", i)
+            except:
+                print("item ranking mismatch", i)
 
 
 def test_qa_pipeline_online():
@@ -202,6 +167,7 @@ def test_qa_pipeline_online():
         "class": QAReranker,
         "config": {
             "rank_key": [("rank", False)],
+            "show_cols": ["question", "answer"],
             "reranking_scheme": {
                 "recall_ranking_score_threshold": 0.75,
                 "recall_ranking_top_n": 2,
@@ -235,7 +201,11 @@ def test_qa_pipeline_online():
         try:
             assert results == ground_truth_list
         except:
-            print("item ranking mismatch", i)
+            try:
+                assert results[:5] == ground_truth_list[:5]
+                print("top5 match but not all", i)
+            except:
+                print("item ranking mismatch", i)
 
 
-test_qa_pipeline_online()
+test_qa_pipeline()
