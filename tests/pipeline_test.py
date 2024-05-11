@@ -5,7 +5,7 @@ import pandas as pd
 from pipeline import QAPineline
 from search_engine import QASearchEngine, VectorSim
 from find_keywords import LabellerByRules
-from recall import get_recall_channels, RecallBySearchEngine
+from recall import RecallBySearchEngine
 from merge import QAMerge
 from rank import QAScorer
 from rerank import QAReranker

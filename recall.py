@@ -19,8 +19,3 @@ class RecallBySearchEngine(RecallChannelBase):
     def query_recalls(self, query_body):
         results = self.search_engine.search(query_body)
         return results
-
-
-def get_recall_channels(config):
-    return {channel_name: config[channel_name]["class"](config[channel_name]["config"])
-            for channel_name in config}

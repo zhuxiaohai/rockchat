@@ -28,6 +28,7 @@ def send_embedding_requests(string_list, num_requests=3, url="http://0.0.0.0:850
         if response.status_code == 200:
             # 直接处理 JSON 响应
             responses.append(response.json())
+            break
         else:
             if verbose:
                 print(f"Request {i + 1} failed with status code {response.status_code}")
