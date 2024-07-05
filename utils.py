@@ -1,5 +1,19 @@
 import re
 import jieba
+import Levenshtein
+
+
+def find_closest_string(a, string_list):
+    closest_string = None
+    min_distance = float('inf')
+
+    for s in string_list:
+        distance = Levenshtein.distance(a, s)
+        if distance < min_distance:
+            min_distance = distance
+            closest_string = s
+
+    return closest_string, min_distance
 
 
 def find_non_chinese_substrings(s):
@@ -17,6 +31,26 @@ def find_non_chinese_substrings(s):
     matches = [match for match in matches if not match.isspace()]
 
     return matches
+
+
+def find_non_chinese_substrings_with_pos(s):
+    pattern = r'(?:[^\u4e00-\u9fff\W]| )+(?:上下水(?:版(?:本)?)?)?'
+    matches = re.finditer(pattern, s)
+
+    substrings_with_positions = []
+    for match in matches:
+        start, end = match.span()
+        substring = match.group()
+
+        # 去除左右两边的空格并调整位置
+        stripped_substring = substring.strip()
+        start += len(substring) - len(substring.lstrip())
+        end -= len(substring) - len(substring.rstrip())
+
+        if stripped_substring and not stripped_substring.isspace():
+            substrings_with_positions.append((stripped_substring, start, end))
+
+    return substrings_with_positions
 
 
 def clean_string(s):
@@ -39,6 +73,25 @@ def find_error_with_reason(a):
     return [name.replace(" ", "").replace("原因", "") for name in matches]
 
 
+def find_error_with_reason_with_pos(a):
+    # 第一次匹配“错误xxx”
+    pattern1 = r"错误\s*\d+"
+    matches1 = [(match.group(), match.start(), match.end()) for match in re.finditer(pattern1, a)]
+
+    # 第二次匹配“错误原因xxx”
+    pattern2 = r"错误原因\s*\d+"
+    matches2 = [(match.group(), match.start(), match.end()) for match in re.finditer(pattern2, a)]
+
+    # 合并两次匹配的结果
+    matches = matches1 + matches2
+
+    # 处理匹配结果，去掉空格和“原因”
+    results = [{"word": name.replace(" ", "").replace("原因", ""), "start": start, "end": end}
+               for name, start, end in matches]
+
+    return results
+
+
 def find_model(x, all_model_list):
     x = x.replace("\n", "")
     x = find_non_chinese_substrings(x)
@@ -46,8 +99,32 @@ def find_model(x, all_model_list):
     return [model for model in all_model_list if model in result]
 
 
+def find_model_with_pos(x, all_model_list):
+    substrings_with_positions = find_non_chinese_substrings_with_pos(x)
+    results = []
+
+    for substring, start, end in substrings_with_positions:
+        cleaned_substring = clean_string(substring)
+        cleaned_substring = cleaned_substring.replace("版本", "").replace("版", "")
+        if cleaned_substring in all_model_list:
+            results.append({"word": cleaned_substring, "start": start, "end": end})
+            x = x.replace(substring, "")
+
+    return results, x
+
+
 def find_cat(x, all_cat_list):
     return [name for name in all_cat_list if name in x]
+
+
+def find_cat_with_pos(x, all_cat_list):
+    positions = []
+    for name in all_cat_list:
+        for match in re.finditer(re.escape(name), x):
+            start = match.start()
+            end = match.end()
+            positions.append({"word": name, "start": start, "end": end})
+    return positions
 
 
 def remove_model_name(x, all_model_list):

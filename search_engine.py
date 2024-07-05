@@ -1,12 +1,14 @@
 from abc import ABC, abstractmethod
 from collections.abc import Iterable
 import heapq
+from pathlib import Path
 import requests
 from time import time
 import numpy as np
 import pandas as pd
 from fastbm25 import fastbm25
 from sentence_transformers import SentenceTransformer
+from langchain.embeddings.huggingface import HuggingFaceEmbeddings
 
 
 def send_embedding_requests(string_list, num_requests=3, url="http://0.0.0.0:8501/embeddings/", verbose=False):
@@ -137,7 +139,7 @@ class PandasSearchEngine(ABC):
                 continue
             indices = set()
             for entity in labels[col]:
-                indices = self.index[col][entity] | indices
+                indices = self.index[col].get(entity, set()) | indices
             filters[col] = indices
         return filters
 
@@ -217,3 +219,78 @@ class QASearchEngine(PandasSearchEngine):
 
         return result_list
 
+class VectorDBSearchEngine(ABC):
+    def __init__(self, config):
+        self.config = config
+        self.vector_db = config["vector_db"]["class"](config["vector_db"]["host"])
+        self.encoder = HuggingFaceEmbeddings(model_name=config["encoder_path"],
+                                             encode_kwargs={'normalize_embeddings': True})
+        collection_name = config["collection_name"]
+        if config.get("reset", True):
+            self.vector_db.delete_collection(collection_name)
+            collection = pd.read_csv(config["docs_path"]).reset_index(drop=True)
+            docs = collection[[config["docs_col"], config["ids_col"]]].rename(
+                columns={config["docs_col"]: "page_content",
+                         config["ids_col"]: "ids"}
+            ).astype({"ids": str}).to_dict(orient="records")
+            self.docs = [doc["page_content"] for doc in docs]
+            if config.get("metadata_cols", None):
+                metadata = collection[config["metadata_cols"]].to_dict(orient="records")
+                for i in range(len(docs)):
+                    docs[i].update({"metadata": metadata[i]})
+            self.store = self.vector_db.build_collection(
+                collection_name,
+                docs,
+                self.encoder
+            )
+        else:
+            self.store = self.vector_db.get_collection(
+                collection_name,
+                self.encoder
+            )
+            self.docs = []
+            for ids in self.store.get()["ids"]:
+                self.docs.append(
+                    self.store.get(ids=[ids], include=["documents"])["documents"][0]
+                )
+
+    @abstractmethod
+    def search(self, body):
+        pass
+
+
+class QAVectorDBSearchEngine(VectorDBSearchEngine):
+    def search(self, body):
+        cat_list = body["labels"]["cat"]
+        filter = None
+        if cat_list:
+            if len(cat_list) == 1:
+                filter = {cat_list[0]["word"]: True}
+            else:
+                filter = {
+                    "$or": [{cat["word"]: True} for cat in cat_list]
+                }
+        top_n = body["top_n"]
+        recall = []
+        for entity in body["labels"]["entities"]:
+            filter_content = {"$and": [{"content": entity["word"].lower()}, filter]}\
+                if filter else {"content": entity["word"].lower()}
+            results = self.store.similarity_search_with_relevance_scores(entity["word"], k=top_n, filter=filter_content)
+            results += self.store.similarity_search_with_relevance_scores(entity["word"], k=top_n, filter=filter)
+            for result in results:
+                item = {
+                        "entity": entity,
+                        "page_content": result[0].page_content,
+                        "metadata": result[0].metadata,
+                        "score": result[1],
+                    }
+                recall.append(item)
+
+        content_set = set()
+        deduplicated_recall = []
+        for item in recall:
+            if item["page_content"] not in content_set:
+                deduplicated_recall.append(item)
+                content_set.add(item["page_content"])
+
+        return deduplicated_recall

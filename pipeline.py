@@ -38,3 +38,19 @@ class QAPineline(PipelineBase):
         ranked_results = self.reranker.rerank(scored_results)
 
         return ranked_results
+
+
+class NL2SQLPineline(PipelineBase):
+    def __init__(self, config):
+        super().__init__(config)
+        self.router = config["router"]["class"](config["router"]["config"])
+        self.recall_config = config["recall"]
+        self.recall = config["recall"]["class"](config["recall"]["config"])
+        self.nl2sql = config["nl2sql"]["class"](config["nl2sql"]["config"])
+
+    def run(self, query):
+        query_body = self.router.extract_keywords(query)
+        query_body.update({"top_n": self.recall_config["top_n"]})
+        recalled_cols = self.recall.query_recalls(query_body)
+        tabler_results = self.nl2sql.predict(query_body, recalled_cols)
+        return tabler_results

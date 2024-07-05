@@ -166,6 +166,57 @@ def look_up_same_keywords_different_models(
     return gen, question_template
 
 
+def look_up_same_keywords_different_models_v2(
+        df,
+        exclude_cols=["平台ID", "商品id", "商品编码", "商品分类", "商品名字", "版本", "商品型号"],
+        query_num=1, keywords_num=1, selected_queries=[], selected_cols=[]
+):
+    primary_cols = ["商品型号"]
+    if "版本" in df.columns:
+        primary_cols.append("版本")
+    df["primary_key"] = df[primary_cols].apply(lambda x: "".join([x[col] for col in primary_cols if not pd.isna(x[col])]), axis=1)
+    query_cols = ["商品型号", "primary_key"]
+    valid_columns = [col for col in df.columns if col not in exclude_cols + query_cols]
+
+    if len(selected_queries) == 0:
+        selected_queries = []
+        col_indices = range(len(query_cols))
+        row_indices = range(df.shape[0])
+        selected_row_indices_list = random.sample(row_indices, query_num)
+        for selected_row_indices in selected_row_indices_list:
+            selected_col_indices = random.sample(col_indices, 1)[0]
+            query = df[query_cols[selected_col_indices]].iloc[selected_row_indices]
+            selected_queries.append((query_cols[selected_col_indices], query))
+    else:
+        query_num = len(selected_queries)
+
+    if len(selected_cols) == 0:
+        indices = range(len(valid_columns))
+        selected_indices = random.sample(indices, keywords_num)
+        selected_cols = [valid_columns[i] for i in selected_indices]
+    else:
+        keywords_num = len(selected_cols)
+
+    question_template = ("和".join([f"[问询词{i}]" for i in range(query_num)]) + "的" +
+                         "和".join([f"[关键词{i}]" for i in range(keywords_num)]) + "是什么？")
+
+    question = "和".join([i[1] for i in selected_queries]) + "的" + "和".join(selected_cols) + "是什么？"
+    replace = {k: v for k, v in zip([f"[问询词{i}]" for i in range(query_num)] +
+                                    [f"[关键词{i}]" for i in range(keywords_num)],
+                                    [i[1] for i in selected_queries] + selected_cols)}
+
+    prompt = []
+    for i in range(len(selected_queries)):
+        for _, row in df.loc[df[selected_queries[i][0]] == selected_queries[i][1]].iterrows():
+            result = {"primary_value": row["primary_key"], "key": "|".join(selected_cols)}
+            for j in range(len(selected_cols)):
+                result[selected_cols[j]] = row[selected_cols[j]]
+            prompt.append(result)
+    gen = {"question": question, "prompt": prompt, "replace": replace}
+
+    return gen, question_template
+
+
 def gen_same_keywords_different_models(output_path, seed=20):
     random.seed(seed)
     exclude_cols = ["平台ID", "商品id", "商品编码", "商品分类", "商品名字", "版本", "商品型号", "primary_key"]
@@ -220,6 +271,45 @@ def gen_same_keywords_different_models(output_path, seed=20):
             file.write(json.dumps(result) + '\n')
 
 
+def gen_same_keywords_different_models_v2(output_path, seed=20):
+    random.seed(seed)
+    exclude_cols = ["平台ID", "商品id", "商品编码", "商品分类", "商品名字", "版本", "商品型号", "primary_key"]
+    dir_name = "/data/dataset/kefu"
+    result_list = []
+
+    csv_name_list = ["sweeping", "mopping", "washing"]
+    for cat_num in range(1, len(csv_name_list)+1):
+        selected_cats = random.sample(csv_name_list, cat_num)
+        df = []
+        csv_name_unique = []
+        for csv_name in selected_cats:
+            csv_path = os.path.join(dir_name, csv_name + ".csv")
+            df_iter = pd.read_csv(csv_path)
+            df_iter["商品型号"] = df_iter["商品型号"].apply(lambda x: format_model(x)[0])
+            df.append(df_iter)
+            csv_name_unique.append(csv_name)
+        csv_name_unique = sorted(csv_name_unique)
+        df = pd.concat(df, axis=0)
+        query_num_list = [2, 3]
+        keywords_num_list = [1, 2, 3]
+        for query_num in query_num_list:
+            for keywords_num in keywords_num_list:
+                gen, question_template = look_up_same_keywords_different_models_v2(
+                    df,
+                    exclude_cols=exclude_cols,
+                    query_num=query_num,
+                    keywords_num=keywords_num
+                )
+                result = {"cat": ",".join(csv_name_unique), "gen": gen, "template": question_template, "cat_num": cat_num}
+                result_list.append(result)
+
+    # 打开一个文件用于写入
+    with open(output_path, 'w') as file:
+        for result in result_list:
+            # 将每个JSON对象转换为字符串并写入文件，每个对象占一行
+            file.write(json.dumps(result) + '\n')
+
+
 def look_up_different_keywords_different_models(
         df,
         exclude_cols=["平台ID", "商品id", "商品编码", "商品分类", "商品名字", "版本", "商品型号"],
@@ -251,6 +341,90 @@ def look_up_different_keywords_different_models(
     if len(selected_cols) == 0:
         indices = range(len(valid_columns))
         selected_indices = [random.sample(indices, keywords_num_segment) for keywords_num_segment in keywords_num]
+        selected_cols = [[valid_columns[i] for i in selected_indices_segment]
+                         for selected_indices_segment in selected_indices]
+    else:
+        keywords_num = [len(segment) for segment in selected_cols]
+
+    segment_list = []
+    for i, (query_num_segment, keywords_num_segment) in enumerate(zip(query_num, keywords_num)):
+        segment = ("、".join([f"[问询词{i}-{j}]" for j in range(query_num_segment)]) + "的" +
+                   "、".join([f"[关键词{i}-{j}]" for j in range(keywords_num_segment)]))
+        segment_list.append(segment)
+    question_template = "和".join(segment_list) + "是什么？"
+
+    segment_list = []
+    replace = dict()
+    for i, (selected_queries_segment, selected_cols_segment) in enumerate(zip(selected_queries, selected_cols)):
+        segment = ("、".join([j[1] for j in selected_queries_segment]) + "的" +
+                   "、".join(selected_cols_segment))
+        replace |= {k: v for k, v in zip([f"[问询词{i}-{j}]" for j in range(len(selected_queries_segment))] +
+                                         [f"[关键词{i}-{j}]" for j in range(len(selected_cols_segment))],
+                                         [j[1] for j in selected_queries_segment] + selected_cols_segment)}
+        segment_list.append(segment)
+    question = "和".join(segment_list) + "是什么？"
+
+    prompt = []
+    for selected_queries_segment, selected_cols_segment in zip(selected_queries, selected_cols):
+        for i in range(len(selected_queries_segment)):
+            for _, row in df.loc[df[selected_queries_segment[i][0]] == selected_queries_segment[i][1]].iterrows():
+                result = {"primary_value": row["primary_key"], "key": "|".join(selected_cols_segment)}
+                for j in range(len(selected_cols_segment)):
+                    result[selected_cols_segment[j]] = row[selected_cols_segment[j]]
+                prompt.append(result)
+    gen = {"question": question, "prompt": prompt, "replace": replace}
+
+    return gen, question_template
+
+
+def look_up_different_keywords_different_models_v2(
+        df,
+        exclude_cols=["平台ID", "商品id", "商品编码", "商品分类", "商品名字", "版本", "商品型号"],
+        query_num=[1, 1], keywords_num=[1, 1],
+        selected_queries=[], selected_cols=[]
+):
+    def split_list_by_lengths(lst, lengths):
+        result = []
+        index = 0
+        for length in lengths:
+            result.append(lst[index:index + length])
+            index += length
+        return result
+
+    primary_cols = ["商品型号"]
+    if "版本" in df.columns:
+        primary_cols.append("版本")
+    df["primary_key"] = df[primary_cols].apply(lambda x: "".join([x[col] for col in primary_cols if not pd.isna(x[col])]), axis=1)
+    query_cols = ["商品型号", "primary_key"]
+    valid_columns = [col for col in df.columns if col not in exclude_cols + query_cols]
+
+    if len(selected_queries) == 0:
+        selected_queries = []
+        col_indices = range(len(query_cols))
+        row_indices = range(df.shape[0])
+        query_num_all = sum(query_num)
+        if query_num_all <= len(row_indices):
+            selected_row_indices_list_all = random.sample(row_indices, query_num_all)
+            selected_row_indices_list_all = split_list_by_lengths(selected_row_indices_list_all, query_num)
+        else:
+            selected_row_indices_list_all = [random.sample(row_indices, query_num_segment) for query_num_segment in
+                                             query_num]
+        for selected_row_indices_list in selected_row_indices_list_all:
+            selected_queries_segment = []
+            for selected_row_indices in selected_row_indices_list:
+                selected_col_indices = random.sample(col_indices, 1)[0]
+                query = df[query_cols[selected_col_indices]].iloc[selected_row_indices]
+                selected_queries_segment.append((query_cols[selected_col_indices], query))
+            selected_queries.append(selected_queries_segment)
+    else:
+        query_num = [len(segment) for segment in selected_queries]
+
+    if len(selected_cols) == 0:
+        indices = range(len(valid_columns))
+        keywords_num_all = sum(keywords_num)
+        selected_indices_list_all = random.sample(indices, keywords_num_all)
+        selected_indices = split_list_by_lengths(selected_indices_list_all, keywords_num)
+        # selected_indices = [random.sample(indices, keywords_num_segment) for keywords_num_segment in keywords_num]
         selected_cols = [[valid_columns[i] for i in selected_indices_segment]
                          for selected_indices_segment in selected_indices]
     else:
@@ -342,5 +516,48 @@ def gen_different_keywords_different_models(output_path, seed=20):
             # 将每个JSON对象转换为字符串并写入文件，每个对象占一行
             file.write(json.dumps(result) + '\n')
 
+
+def gen_different_keywords_different_models_v2(output_path, seed=20):
+    random.seed(seed)
+    exclude_cols = ["平台ID", "商品id", "商品编码", "商品分类", "商品名字", "版本", "商品型号", "primary_key"]
+    dir_name = "/data/dataset/kefu"
+    result_list = []
+
+    csv_name_list = ["sweeping", "mopping", "washing"]
+    for cat_num in range(1, len(csv_name_list)+1):
+        selected_cats = random.sample(csv_name_list, cat_num)
+        df = []
+        csv_name_unique = []
+        for csv_name in selected_cats:
+            csv_path = os.path.join(dir_name, csv_name + ".csv")
+            df_iter = pd.read_csv(csv_path)
+            df_iter["商品型号"] = df_iter["商品型号"].apply(lambda x: format_model(x)[0])
+            df.append(df_iter)
+            csv_name_unique.append(csv_name)
+        csv_name_unique = sorted(csv_name_unique)
+        df = pd.concat(df, axis=0)
+        query_num_list = [2, 3]
+        keywords_num_list = [1, 2, 3]
+        for query_num in query_num_list:
+            for keywords_num in keywords_num_list:
+                gen, question_template = look_up_different_keywords_different_models_v2(
+                    df,
+                    exclude_cols=exclude_cols,
+                    query_num=[query_num, query_num],
+                    keywords_num=[keywords_num, keywords_num]
+                )
+                result = {"cat": ",".join(csv_name_unique), "gen": gen, "template": question_template, "cat_num": cat_num}
+                result_list.append(result)
+
+
+    # 打开一个文件用于写入
+    with open(output_path, 'w') as file:
+        for result in result_list:
+            # 将每个JSON对象转换为字符串并写入文件，每个对象占一行
+            file.write(json.dumps(result) + '\n')
+
+
 # gen_same_keywords_different_models(output_path="/data/dataset/kefu/gen_same_keywords_for_models.jsonl", seed=20)
-gen_different_keywords_different_models(output_path="/data/dataset/kefu/gen_different_keywords_different_models.jsonl", seed=20)
+# gen_different_keywords_different_models(output_path="/data/dataset/kefu/gen_different_keywords_different_models.jsonl", seed=20)
+gen_same_keywords_different_models_v2(output_path="/data/dataset/kefu/gen_same_keywords_for_models_v2.jsonl", seed=20)
+# gen_different_keywords_different_models_v2(output_path="/data/dataset/kefu/gen_different_keywords_different_models_v2.jsonl", seed=20)

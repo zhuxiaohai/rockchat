@@ -1,7 +1,8 @@
 import pandas as pd
-from find_keywords import LabellerByRules
+from find_keywords import LabellerByRules, LabellerByRulesWithPos
 from recall import RecallBySearchEngine
-from search_engine import QASearchEngine, VectorSim
+from search_engine import QASearchEngine, VectorSim, QAVectorDBSearchEngine
+from vector_db import ChromaDB
 import json
 
 
@@ -149,5 +150,50 @@ def test_recall_vector_search_online():
             except:
                 print("recall item mismatch", i)
 
+import numpy as np
+def test_recall_table_entity():
+    test = pd.read_csv("data/data_table_qa.csv")
 
-test_recall_vector_search_online()
+    config_router = {
+        "dim_df_path": "../data/dim_df20240619.csv",
+        "model_col": ("model", "model"),
+        "cat_col": ("cat_cn", "cat"),
+        "error_col": ("error", "error"),
+        "ner_model_path": "/workspace/data/private/zhuxiaohai/models/bert_finetuned_ner_augmented/"
+    }
+    router = LabellerByRulesWithPos(config_router)
+
+
+    config = {
+        "search_engine": {
+            "class": QAVectorDBSearchEngine,
+            "docs_path": "data/table_entity.csv",
+            "docs_col": "entity_name",
+            "ids_col": "ids",
+            "metadata_cols": ["sweeping", "washing", "mopping", "content"],
+            "collection_name": "table_entity",
+            "reset": False,
+            "encoder_path": "/workspace/data/private/zhuxiaohai/models/bge_finetuned_emb_ner_link",
+            "vector_db": {
+                "class": ChromaDB,
+                "host": "/data/dataset/kefu/chroma",
+            },
+        },
+        "top_n": 1,
+    }
+
+    top_n = config.pop("top_n")
+    search_engine_class = config["search_engine"].pop("class")
+    vector_search = search_engine_class(config["search_engine"])
+    for i in range(test.shape[0]):
+        query = test["question"].iloc[i]
+        query_body = router.extract_keywords(query)
+        query_body.update({"top_n": top_n})
+        results = vector_search.search(query_body)
+        results = [item["page_content"] for item in results]
+        results = sorted(results)
+        ground_truth_list = json.loads(test["pred_entity"].iloc[i])
+        ground_truth_list = sorted(list(set(ground_truth_list)))
+
+        assert len(results) == len(ground_truth_list), f"recall number mismatch {i}"
+        assert results == ground_truth_list, f"recall item mismatch {i}"

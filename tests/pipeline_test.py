@@ -2,13 +2,15 @@ import os
 os.environ['CUDA_VISIBLE_DEVICES'] = "0"
 import json
 import pandas as pd
-from pipeline import QAPineline
-from search_engine import QASearchEngine, VectorSim
-from find_keywords import LabellerByRules
+from pipeline import QAPineline, NL2SQLPineline
+from vector_db import ChromaDB
+from search_engine import QASearchEngine, VectorSim, QAVectorDBSearchEngine
+from find_keywords import LabellerByRules, LabellerByRulesWithPos
 from recall import RecallBySearchEngine
 from merge import QAMerge
 from rank import QAScorer
 from rerank import QAReranker
+from nl2sql import SimpleLookup
 
 key_map = {"result": "id"}
 one_channel_map = {"vector_search": "raw"}
@@ -208,4 +210,61 @@ def test_qa_pipeline_online():
                 print("item ranking mismatch", i)
 
 
-test_qa_pipeline()
+def test_nl2sql_pipeline():
+    router_config = {
+        "class": LabellerByRulesWithPos,
+        "config": {
+            "dim_df_path": "../data/dim_df20240619.csv",
+            "model_col": ("model", "model"),
+            "cat_col": ("cat_cn", "cat"),
+            "error_col": ("error", "error"),
+            "ner_model_path": "/workspace/data/private/zhuxiaohai/models/bert_finetuned_ner_augmented/"
+        }
+    }
+
+    recall_config = {
+        "class": RecallBySearchEngine,
+        "config": {
+            "search_engine": {
+                "class": QAVectorDBSearchEngine,
+                "docs_path": "data/table_entity.csv",
+                "docs_col": "entity_name",
+                "ids_col": "ids",
+                "metadata_cols": ["sweeping", "washing", "mopping", "content"],
+                "collection_name": "table_entity",
+                "reset": False,
+                "encoder_path": "/workspace/data/private/zhuxiaohai/models/bge_finetuned_emb_ner_link",
+                "vector_db": {
+                    "class": ChromaDB,
+                    "host": "/data/dataset/kefu/chroma",
+                },
+            },
+        },
+        "top_n": 1,
+    }
+
+    nl2sql_config = {
+        "class": SimpleLookup,
+        "config": {
+            "db_absolute_path": "/root/PycharmProjects/rockchat/data/model_params.db",
+            "reset": False,
+            "df_path": "/root/PycharmProjects/rockchat/data/model_params20240620.csv",
+            "table_name": "model_params20240620",
+        }
+    }
+
+    pipeline_config = {
+        "router": router_config,
+        "recall": recall_config,
+        "nl2sql": nl2sql_config,
+    }
+
+    nl2sql_pipeline = NL2SQLPineline(pipeline_config)
+
+    query = "G20的电源线有多长"
+    result = nl2sql_pipeline.run(query)
+    print(result)
+    result = result.to_dict(orient="records")
+    assert len(result) == 2
+    assert result[0]["电源线长"] == "180cm"
+    assert result[1]["电源线长"] == "180cm"
