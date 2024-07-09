@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
+import copy
 import pandas as pd
-from database import SQLAlchemyDB
+from tableagent.database import SQLAlchemyDB
+from tableagent.sql_utils import create_sql_query_chain_with_selector, SQLDatabaseWithSelector
 
 
 def dataframe_to_markdown(df: pd.DataFrame) -> str:
@@ -41,6 +43,11 @@ class Tabler(ABC):
     def predict(self, query, recall):
         sql = self.prepare_sql(query, recall)
         result_df = pd.read_sql_query(sql, self.db.engine)
+        primary_key = [col for col in result_df.columns if col in ["商品型号", "版本"]]
+        if primary_key:
+            result_df = result_df.drop_duplicates(primary_key)
+        elif result_df.shape[-1] == 1:
+            result_df = result_df.drop_duplicates()
         if self.output_type == "markdown":
             result_df = dataframe_to_markdown(result_df)
         return result_df
@@ -77,4 +84,39 @@ class SimpleLookup(Tabler):
         {where_condition}
         """
 
+        return sql
+
+
+class LLM2SQL(Tabler):
+    def __init__(self, config):
+        super().__init__(config)
+        self.llm = config["llm"]
+        db_absolute_path = config["db_absolute_path"]
+        self.db_langchain = SQLDatabaseWithSelector.from_uri(f"sqlite:///{db_absolute_path}")
+        self.chain = create_sql_query_chain_with_selector(self.llm, self.db_langchain)
+
+    @staticmethod
+    def _replace_substring(s, start, end, replacement):
+        new_string = s[:start] + replacement + s[end:]
+        return new_string
+
+    def prepare_sql(self, query, recall):
+        # TODO: Take cake of 版本
+        recalled_cols = [item["page_content"] for item in recall]
+        primary_key = ["商品型号", "版本", "商品分类"]
+        question = query["query"]
+        labels = copy.deepcopy(query.get("labels", {}))
+        for model in labels.get("model", []):
+            start = model["start"]
+            end = model["end"]
+            model["word"] = model["word"].replace("上下水", "").replace("版本", "").replace("版", "")
+            if (start != -99) and (end != -99):
+                replacement = model["word"]
+                question = self._replace_substring(question, start, end, replacement)
+        sql = self.chain.invoke({"question": question,
+                                 "table_selectors": {
+                                     self.table_name: primary_key + recalled_cols
+                                 },
+                                 "labels": labels,
+                                 })
         return sql
